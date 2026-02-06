@@ -1,0 +1,21 @@
+{
+  "name": "media_soup_sfu",
+  "version": "1.0.0",
+  "description": "\"media soup SUF\"",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "\"Thoufiq\"",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "json": "^11.0.0",
+    "json-web-token": "^3.2.0",
+    "mediasoup": "^3.19.16",
+    "socket.io": "^4.8.3",
+    "token": "^0.1.0",
+    "web": "^0.0.2"
+  }
+}
