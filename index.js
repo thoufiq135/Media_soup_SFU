@@ -11,9 +11,11 @@ app.use(express.json())
 const server= http.createServer(app)
 const io=new Server(server,{
     cors:{
-        origin:"*",
-        methods:["GET","POST"]
-    }
+        origin:"https://gsin.online",
+        methods:["GET","POST"],
+        credentials:true
+    },
+    transports:["websocket","polling"]
 })
 let workers;
 const mediaCodecs=[
