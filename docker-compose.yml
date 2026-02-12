@@ -1,8 +1,7 @@
-services: 
- mediasoup: 
-  build: .
-  ports:
-     
-   - "3030:3030"
-   - "10000-20000:10000-20000/udp"
-  
+services:
+  mediasoup:
+    build: .
+    ports:
+      - "3030:3030"
+      - "40000-40100:40000-40100/udp"
+

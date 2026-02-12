@@ -21,8 +21,7 @@ path: "/socket.io",
     transports:["polling","websocket"],
  allowEIO3: true
 })
-let worker;
-const peer=new Map()
+let workers;
 const mediaCodecs=[
     {kind:"audio",mimeType:"audio/opus",clockRate:48000,channels:2},
     {kind:"video",mimeType:"video/VP8",clockRate:90000}
@@ -40,7 +39,7 @@ const rooms={
     room8:{ router:null,producers:[], users:[],max:4},
 }
 async function startMediaSoup(){
-    worker=await mediasoup.createWorker()
+    workers=await mediasoup.createWorker()
     console.log("worker created")
     for(const roomid in rooms){
     rooms[roomid].router=await workers.createRouter({mediaCodecs})
@@ -51,56 +50,56 @@ async function startMediaSoup(){
 startMediaSoup()
 io.on("connection",socket=>{
     console.log("user connected = ",socket.id)
-    socket.on("joinRoom",({roomid,name,avatar_url},cb)=>{
-const room=rooms[roomid];
-if(!room) return cb({error:"Room not found"})
- if (room.users.length >= room.max)
-    return cb({ error:"Room is full" });
-socket.join(roomid);
-const peer=peers.get(socket.id)
- peer.roomid=roomid
-peer.name=name
-peer.avatar=avatar_url
-room.users.push(socket.id);
-
-  console.log(`${socket.id} joined ${roomid} name = ${name} `);
-cb({
-rtpCapabilities:room.router.rtpCapabilities,
-producer:room.producers
-})
-
+    socket.on("joinRoom",({roomid},cb)=>{
+        console.log("came to joinRoom") 
     })
     socket.on("createTransport",async(cb)=>{
-        console.log("came to createTransport")
+        console.log("camr to createTransport")
     })
     socket.on("connectTransport",async({dtlsParameters})=>{
+      
         console.log("came to connectTransport")
-        
     })
     socket.on("produce",async ({kind,rtpParameters},cb)=>{
 console.log("came to produce")
-    })
+})
     socket.on("createRecvTransport", async (cb) => {
 
-  console.log("came to createRecvTransport")
-})
+  console.log("cam to createRecvTransport")
+
+});
 socket.on("connectRecvTransport", async ({ dtlsParameters }) => {
-  
+  console.log("came to connectRecvTransport")
 });
 socket.on("consume", async ({ producerId, rtpCapabilities }, cb) => {
-
-    console.log("recvTransport not ready yet");
-  
+ console.log("came to consume")
 });
 socket.on("resumeConsumer", async ({consumerId}) => {
-     
-    console.log("came to resumeConsumer");
-
     
+  console.log("came to resumeConsumer");
+});
+    socket.on("leaveRoom", () => {
+
+  console.log("came to le
 });
 
     socket.on("disconnect",()=>{
-        console.log("came to disconnect")
+        const room = rooms[socket.roomid];
+    if (!room) return;
+
+    // Remove user
+    room.users = room.users.filter(id => id !== socket.id);
+
+    // Remove their producers
+    if (socket.producers) {
+        socket.producers.forEach(p => {
+            room.producers = room.producers.filter(rp => rp.id !== p.id);
+            p.close();
+        });
+    }
+
+    console.log("User disconnected:", socket.id);
+    })
 })
 server.listen(3030,"0.0.0.0",()=>{
     console.log("server is running on port 3030")
