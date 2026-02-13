@@ -3,7 +3,7 @@ const mediasoup=require("mediasoup")
 const cors=require("cors")
 const {Server}=require("socket.io")
 const http=require("http")
-const { default: socket } = require("../virtual_campus_glang/frontend/virtual_campus/src/socket")
+
 
 const app=express()
 app.use(cors())
@@ -50,9 +50,47 @@ async function startMediaSoup(){
 }
 }
 startMediaSoup()
+function cleanupPeer(socketId) {
+
+  const peer = peers.get(socketId);
+  if (!peer) return;
+
+  console.log("cleaning peer:", socketId);
+
+  // close producers
+  peer.producers?.forEach(p => p.close());
+
+  // close consumers
+  peer.consumers?.forEach(c => c.close());
+
+  // close transports
+  peer.sendTransport?.close();
+  peer.recvTransport?.close();
+
+  // remove from room
+  const room = rooms[peer.roomid];
+  if (room) {
+
+    room.users = room.users.filter(id => id !== socketId);
+
+    room.producers = room.producers.filter(pid =>
+      !peer.producers?.find(p => p.id === pid)
+    );
+  }
+
+ peer.roomid = null;
+peer.sendTransport = null;
+peer.recvTransport = null;
+peer.producers = [];
+peer.consumers = [];
+
+  console.log("peer removed completely");
+}
+
 io.on("connection",socket=>{
     console.log("user connected = ",socket.id)
     peers.set(socket.id,{
+      socketId: socket.id,
         roomid:null,
         name:null,
         avatar:null,
@@ -64,6 +102,22 @@ io.on("connection",socket=>{
     })
 
     socket.on("joinRoom",({roomid,name,avatar_url},cb)=>{
+      if(!roomid||!avatar_url){
+        console.log("error roomid or avatar url")
+        return
+      }
+      if (!peers.has(socket.id)) {
+    peers.set(socket.id, {
+      socketId: socket.id,
+      roomid: null,
+      name: null,
+      avatar: null,
+      sendTransport: null,
+      recvTransport: null,
+      producers: [],
+      consumers: []
+    });
+  }
 const room=rooms[roomid];
 if(!room) return cb({error:"Room not found"})
  if (room.users.length >= room.max)
@@ -77,6 +131,10 @@ peer.avatar=avatar_url
 room.users.push(socket.id);
 
   console.log(`${socket.id} joined ${roomid} avatar = ${avatar_url} name= ${Name}`);
+  room.producers.forEach(producerId => {
+  socket.emit("newProducer", { producerId });
+});
+
 cb({
 rtpCapabilities:room.router.rtpCapabilities,
 producer:room.producers
@@ -92,7 +150,7 @@ producer:room.producers
             return cd({error:"peer or name not found"})
         }
         const transport=await room.router.createWebRtcTransport({
-            listenIps: [{ ip:"0.0.0.0", announcedIp: "ws.gsin.online" }],
+            listenIps: [{ ip:"0.0.0.0", announcedIp: "127.0.0.1" }],
         enableUdp:true,
         enableTcp:true,
         preferUdp:true
@@ -118,6 +176,7 @@ producer:room.producers
     socket.on("connectTransport",async({dtlsParameters},cb)=>{
         console.log("came to connectTransport")
         const peer=peers.get(socket.id)
+        
         if (peer.sendTransport.appData?.connected) {
   return cb && cb();
 }
@@ -154,7 +213,7 @@ socket.on("createRecvTransport",async(data,cb)=>{
     const peer=peers.get(socket.id)
     const room=rooms[peer.roomid]
     const transport=await room.router.createWebRtcTransport({
-        listenIps:[{ip:"0.0.0.0", announcedIp: "ws.gsin.online"}],
+        listenIps:[{ip:"0.0.0.0", announcedIp: "127.0.0.1"}],
      enableUdp:true,
      enableTcp:true,
      preferUdp:true
@@ -168,23 +227,43 @@ socket.on("createRecvTransport",async(data,cb)=>{
  })
  console.log("completed creatRecvTransport",transport)
 })
-socket.on("connectRecvTransport",async({dtlsParameters},cb)=>{
-    console.log("came to connectRecvTransport")
-    
-    const peer=peers.get(socket.id)
-    console.log("peer=",peer)
-    await peer.recvTransport.connect({dtlsParameters})
-    if (peer.consumers) {
+socket.on("connectRecvTransport", async ({ dtlsParameters }, cb) => {
+
+  console.log("came to connectRecvTransport");
+
+  const peer = peers.get(socket.id);
+
+  if (!peer || !peer.recvTransport) {
+    console.log("recvTransport missing");
+    return cb && cb({ error: "recvTransport not found" });
+  }
+
+  // 🔥 IMPORTANT GUARD
+  if (peer.recvTransport.appData?.connected) {
+    console.log("recvTransport already connected");
+    return cb && cb();
+  }
+
+  await peer.recvTransport.connect({ dtlsParameters });
+
+  // ⭐⭐⭐ THIS LINE WAS MISSING
+  peer.recvTransport.appData = { connected: true };
+
+  // optional (not required but fine)
+  if (peer.consumers) {
     for (const consumer of peer.consumers) {
       if (consumer.paused) {
-        await consumer.resume()
-        console.log("consumer resumed:", consumer.id)
+        await consumer.resume();
+        console.log("consumer resumed:", consumer.id);
       }
     }
   }
-    cb && cb()
-     console.log("completed connectRecvTransport")
-})
+
+  cb && cb();
+
+  console.log("completed connectRecvTransport");
+});
+
 socket.on("consume",async({producerId, rtpCapabilities},cb)=>{
    console.log("CONSUME REQUEST for producer", producerId)
    
@@ -213,10 +292,20 @@ consumer.on("producerclose",()=>console.log("producer closed for this consumer")
  cb({
    id:consumer.id,
    kind:consumer.kind,
-   rtpParameters:consumer.rtpParameters
+   rtpParameters:consumer.rtpParameters,
+    peerId: peer.socketId 
  })
 
 })
+socket.on("leaveRoom", () => {
+  console.log("leaveRoom:", socket.id);
+  cleanupPeer(socket.id);
+});
+// socket.on("disconnect", () => {
+//   console.log("disconnected:", socket.id);
+//   cleanupPeer(socket.id);
+// });
+
 })
 
 
