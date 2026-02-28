@@ -55,34 +55,41 @@ function cleanupPeer(socketId) {
   const peer = peers.get(socketId);
   if (!peer) return;
 
+  const roomId = peer.roomid;
+  const room = rooms[roomId];
+console.log("room id=",roomId)
   console.log("cleaning peer:", socketId);
+//console.log("Peer producers during cleanup:", peer.producers.length);
+//console.log("Room producers during cleanup:", room?.producers.length);
+//console.log("Room producer IDs:", room?.producers);
+console.log("Peer producer IDs:", peer.producers.map(p => p.id)); 
+if (room) {
+    // Remove producer IDs directly
+    room.producers = room.producers.filter(
+      producerId => !peer.producers.some(p => p.id === producerId)
+    );
 
-  // close producers
-  peer.producers?.forEach(p => p.close());
+    // Remove user from room
+    room.users = room.users.filter(id => id !== socketId);
+  }
 
-  // close consumers
-  peer.consumers?.forEach(c => c.close());
+  // Close producers
+  peer.producers.forEach(p =>{ 
+    io.to(roomId).emit("producerClosed", {
+    producerId: p.id
+  });
+    p.close();
+  })
 
-  // close transports
+  // Close consumers
+  peer.consumers.forEach(c => c.close());
+
+  // Close transports
   peer.sendTransport?.close();
   peer.recvTransport?.close();
 
-  // remove from room
-  const room = rooms[peer.roomid];
-  if (room) {
-
-    room.users = room.users.filter(id => id !== socketId);
-
-    room.producers = room.producers.filter(pid =>
-      !peer.producers?.find(p => p.id === pid)
-    );
-  }
-
- peer.roomid = null;
-peer.sendTransport = null;
-peer.recvTransport = null;
-peer.producers = [];
-peer.consumers = [];
+  // Remove peer completely
+  peers.delete(socketId);
 
   console.log("peer removed completely");
 }
@@ -129,21 +136,43 @@ const peer=peers.get(socket.id)
 peer.name=Name
 peer.avatar=avatar_url
 room.users.push(socket.id);
-
-  console.log(`${socket.id} joined ${roomid} avatar = ${avatar_url} name= ${Name}`);
+socket.to(roomid).emit("userJoined", {
+  socketId: socket.id,
+  name: peer.name,
+  avatar: peer.avatar
+})
+  //console.log(`${socket.id} joined ${roomid} avatar = ${avatar_url} name= ${Name}`);
   room.producers.forEach(producerId => {
   socket.emit("newProducer", { producerId });
 });
-
+const Pusers = room.users.map((id) => {
+  const user = peers.get(id)
+  return {
+    socketId: id,
+    name: user.name,
+    avatar_url: user.avatar
+  }
+})
 cb({
 rtpCapabilities:room.router.rtpCapabilities,
-producer:room.producers
+producer:room.producers,
+users:Pusers
 })
 
     })
     socket.on("createTransport",async(data,cb)=>{
         console.log("came to createTransport")
         const peer = peers.get(socket.id)
+
+  if (!peer) {
+    console.log("peer not found for socket:", socket.id);
+    return cb && cb({ error: "peer not found" });
+  }
+
+  if (!peer.roomid) {
+    console.log("peer has no roomid yet");
+    return cb && cb({ error: "room not joined yet" });
+  }
         const room=rooms[peer.roomid]
         if(!peer||!room){
             console.log("peer or room not found")
@@ -190,17 +219,37 @@ producer:room.producers
     const peer=peers.get(socket.id)
     const room = rooms[peer.roomid]
     const producer=await peer.sendTransport.produce({kind,rtpParameters})
+    producer.appData={
+      socketId:socket.id
+    }
     await producer.resume()
+    // console.log("Peer producers BEFORE push:", peer.producers.length);
+    // console.log("Room producers BEFORE push:", room.producers.length);
     room.producers.push(producer.id)
+    peer.producers.push(producer)
+//console.log("Room producers AFTER push:", room.producers.length);
      cb({ id: producer.id })
-     io.to(peer.roomid).emit("newProducer",{
+     socket.to(peer.roomid).emit("newProducer",{
         producerId:producer.id
      })
-     console.log("PRODUCER CREATED:", producer.id)
-console.log("producer paused?", producer.paused)
+     //console.log("PRODUCER CREATED:", producer.id)
+//console.log("producer paused?", producer.paused)
 
 producer.on("transportclose",()=>console.log("producer transport closed"))
-producer.on("close",()=>console.log("producer closed"))
+producer.on("close", () => {
+  console.log("producer closed");
+
+  const room = rooms[peer.roomid];
+  if (room) {
+    console.log("came room=",room)
+    room.producers = room.producers.filter(id => id !== producer.id);
+  }else{
+    console.log("room undefined",room)
+  }
+    io.to(peer.roomid).emit("producerClosed", {
+    producerId: producer.id
+  });
+});
 
      console.log("completed produce")
 })
@@ -225,7 +274,7 @@ socket.on("createRecvTransport",async(data,cb)=>{
    iceCandidates:transport.iceCandidates,
    dtlsParameters:transport.dtlsParameters
  })
- console.log("completed creatRecvTransport",transport)
+ console.log("completed creatRecvTransport")
 })
 socket.on("connectRecvTransport", async ({ dtlsParameters }, cb) => {
 
@@ -265,7 +314,7 @@ socket.on("connectRecvTransport", async ({ dtlsParameters }, cb) => {
 });
 
 socket.on("consume",async({producerId, rtpCapabilities},cb)=>{
-   console.log("CONSUME REQUEST for producer", producerId)
+   console.log("CONSUME REQUEST for producer")
    
      const peer = peers.get(socket.id)
    
@@ -285,26 +334,53 @@ if(!room.router.canConsume({
      if (!peer.consumers) peer.consumers = []
 await consumer.resume();
 peer.consumers.push(consumer)
-  console.log("consumer created:", consumer.id)
-console.log("consumer paused?", consumer.paused)
+  //console.log("consumer created:", consumer.id)
+//console.log("consumer paused?", consumer.paused)
  consumer.on("transportclose",()=>console.log("consumer transport closed"))
-consumer.on("producerclose",()=>console.log("producer closed for this consumer"))
+consumer.on("producerclose",()=>
+  console.log("producer closed for this consumer",producerId)
+ 
+)
+const producerOwner=[...peers.values()].find(p=>
+  p.producers.some(prod=>prod.id===producerId)
+)
  cb({
    id:consumer.id,
    kind:consumer.kind,
    rtpParameters:consumer.rtpParameters,
-    peerId: peer.socketId 
+    peerId: producerOwner?.socketId
  })
 
 })
 socket.on("leaveRoom", () => {
   console.log("leaveRoom:", socket.id);
+   const peer = peers.get(socket.id);
+  if (!peer) return;
+
+  const roomid = peer.roomid;
+  socket.to(roomid).emit("userLeft", {
+  socketId: socket.id
+})
   cleanupPeer(socket.id);
+  
 });
-// socket.on("disconnect", () => {
-//   console.log("disconnected:", socket.id);
-//   cleanupPeer(socket.id);
-// });
+socket.on("disconnect", () => {
+  console.log("disconnected:", socket.id);
+
+  const peer = peers.get(socket.id);
+  if (!peer) return;
+
+  const room = rooms[peer.roomid];
+  if (room) {
+    console.log("Room producers count BEFORE cleanup:", room.producers.length);
+  }
+
+  cleanupPeer(socket.id);
+
+  if (room) {
+    console.log("Room producers count AFTER cleanup:", room.producers.length);
+  }
+});
 
 })
 
